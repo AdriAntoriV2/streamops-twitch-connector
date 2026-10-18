@@ -79,10 +79,10 @@ export class TokenManager {
     const response = await this.deviceCodeFlow.waitForAuthorization(signal);
 
     const tokens: TwitchTokens = {
-      accessToken: response.accessToken,
-      refreshToken: response.refreshToken,
-      expiresAt: Date.now() + response.expiresIn * 1000,
-      scopes: response.scopes,
+      accessToken: response.access_token,
+      refreshToken: response.refresh_token,
+      expiresAt: Date.now() + response.expires_in * 1000,
+      scopes: response.scope,
     };
 
     await this.tokenStore.save(tokens);

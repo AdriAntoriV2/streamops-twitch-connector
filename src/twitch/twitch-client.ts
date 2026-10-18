@@ -6,7 +6,7 @@ import { TokenManager } from '../auth/token-manager.js';
 import type { TwitchTokenStore } from '../auth/token-store.js';
 import { TwitchChatClient } from '../chat/twitch-chat-client.js';
 import { EventSubClient } from '../eventsub/eventsub-client.js';
-import { EventSubSubscriptions } from '../eventsub/eventsub-subscriptions.js';
+import { EventSubSubscriptions } from '../eventsub/eventsub-subscription.js';
 
 export class TwitchClient {
   readonly tokens: TokenManager;

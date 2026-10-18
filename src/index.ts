@@ -22,7 +22,7 @@ export type {
 } from './chat/types.js';
 
 export { EventSubClient } from './eventsub/eventsub-client.js';
-export { EventSubSubscriptions } from './eventsub/eventsub-subscriptions.js';
+export { EventSubSubscriptions } from './eventsub/eventsub-subscription.js';
 export type {
   EventSubConnectionState,
   EventSubEnvelope,

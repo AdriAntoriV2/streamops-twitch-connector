@@ -38,7 +38,12 @@ export class DeviceCodeFlow {
   private pollInterval = 5;
   private loginInProgress = false;
 
-  constructor(private readonly config: TwitchConnectorConfig) {
+  constructor(
+    private readonly config: Pick<
+      TwitchConnectorConfig,
+      'clientId' | 'scopes' | 'fetch'
+    >,
+  ) {
     this.fetchImpl = config.fetch ?? fetch;
   }
 
