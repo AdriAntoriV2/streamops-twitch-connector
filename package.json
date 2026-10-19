@@ -1,6 +1,6 @@
 {
   "name": "streamops-twitch-connector",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Framework-independent Twitch OAuth, EventSub, and chat connector",
   "license": "MIT",
   "type": "module",
