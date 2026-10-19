@@ -23,7 +23,7 @@ export class EventSubClient {
     private readonly onStateChange?: (
       state: EventSubConnectionState,
     ) => void,
-  ) {}
+  ) { }
 
   get connectionState(): EventSubConnectionState {
     return this.state;
@@ -109,10 +109,12 @@ export class EventSubClient {
     });
 
     socket.addEventListener('close', () => {
-      if (this.socket === socket) {
-        this.socket = null;
+      // A replaced socket must not affect the active connection.
+      if (this.socket !== socket) {
+        return;
       }
 
+      this.socket = null;
       this.clearKeepaliveTimer();
 
       if (!this.intentionalClose) {
