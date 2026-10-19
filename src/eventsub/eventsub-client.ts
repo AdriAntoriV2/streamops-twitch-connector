@@ -23,7 +23,7 @@ export class EventSubClient {
     private readonly onStateChange?: (
       state: EventSubConnectionState,
     ) => void,
-  ) { }
+  ) {}
 
   get connectionState(): EventSubConnectionState {
     return this.state;
@@ -76,7 +76,9 @@ export class EventSubClient {
     try {
       socket = new WebSocket(url);
     } catch (error) {
+      console.error('[EventSub] Failed to create WebSocket:', error);
       this.scheduleReconnect();
+
       throw new TwitchError(
         'Unable to create Twitch EventSub WebSocket.',
         undefined,
@@ -85,12 +87,26 @@ export class EventSubClient {
       );
     }
 
+    const previousSocket = this.socket;
     this.socket = socket;
 
+    // A replacement socket takes over ownership. Its predecessor must not
+    // reset timers or trigger another reconnect when it eventually closes.
+    if (
+      previousSocket &&
+      previousSocket !== socket &&
+      previousSocket.readyState !== WebSocket.CLOSED
+    ) {
+      console.log('[EventSub] Replacing the previous WebSocket connection.');
+    }
+
     socket.addEventListener('open', () => {
-      if (this.socket === socket) {
-        this.setState('connected');
+      if (this.socket !== socket) {
+        return;
       }
+
+      console.log('[EventSub] WebSocket connected.');
+      this.setState('connected');
     });
 
     socket.addEventListener('message', (message: MessageEvent) => {
@@ -98,18 +114,38 @@ export class EventSubClient {
         return;
       }
 
-      void this.handleMessage(String(message.data)).catch((error) => {
-        // Keep one malformed notification from crashing the process.
+      const raw = String(message.data);
+
+      // Diagnostic logging: EventSub notifications can contain chat content.
+      // Avoid logging their complete payload.
+      try {
+        const envelope = JSON.parse(raw) as EventSubEnvelope;
+        const messageType = envelope.metadata?.message_type;
+
+        console.log(
+          `[EventSub] Received message type: ${messageType ?? 'unknown'}`,
+        );
+      } catch {
+        console.warn('[EventSub] Received a non-JSON WebSocket message.');
+      }
+
+      void this.handleMessage(raw).catch((error: unknown) => {
         console.error('[EventSub] Failed to process message:', error);
       });
     });
 
     socket.addEventListener('error', () => {
-      // The close event is responsible for scheduling reconnection.
+      if (this.socket === socket) {
+        console.error('[EventSub] WebSocket error.');
+      }
     });
 
-    socket.addEventListener('close', () => {
-      // A replaced socket must not affect the active connection.
+    socket.addEventListener('close', (event: CloseEvent) => {
+      console.log(
+        `[EventSub] Socket closed: code=${event.code}, reason=${event.reason || '(none)'}`,
+      );
+
+      // A stale socket must not affect the active connection.
       if (this.socket !== socket) {
         return;
       }
@@ -149,23 +185,35 @@ export class EventSubClient {
           session.keepalive_timeout_seconds ?? 10;
         this.reconnectUrl = null;
         this.resetKeepaliveTimer();
+
+        console.log(
+          `[EventSub] Session established. Keepalive timeout: ${this.keepaliveTimeoutSeconds}s.`,
+        );
         break;
       }
 
       case 'session_keepalive':
+        console.log('[EventSub] Keepalive received.');
         this.resetKeepaliveTimer();
         break;
 
       case 'session_reconnect': {
         const reconnectUrl = envelope.payload.session?.reconnect_url;
 
-        if (reconnectUrl) {
-          this.reconnectUrl = reconnectUrl;
-          this.clearKeepaliveTimer();
-          // Twitch expects the existing socket to remain alive until
-          // the replacement connection is established.
-          this.openSocket(reconnectUrl);
+        if (!reconnectUrl) {
+          console.warn(
+            '[EventSub] Reconnect message did not contain a reconnect URL.',
+          );
+          return;
         }
+
+        console.log('[EventSub] Twitch requested a session handover.');
+        this.reconnectUrl = reconnectUrl;
+        this.clearKeepaliveTimer();
+
+        // Twitch expects the old socket to remain alive until the
+        // replacement connection is established.
+        this.openSocket(reconnectUrl);
         break;
       }
 
@@ -191,6 +239,7 @@ export class EventSubClient {
       }
 
       case 'session_reconnect_failed':
+        console.warn('[EventSub] Twitch reported that session handover failed.');
         this.reconnectUrl = null;
         this.scheduleReconnect();
         break;
@@ -200,6 +249,7 @@ export class EventSubClient {
         break;
 
       default:
+        console.log(`[EventSub] Unhandled message type: ${messageType}`);
         break;
     }
   }
@@ -208,12 +258,14 @@ export class EventSubClient {
     this.clearKeepaliveTimer();
 
     this.keepaliveTimer = setTimeout(() => {
-      console.warn('[EventSub] Keepalive timeout; reconnecting.');
+      console.warn(
+        `[EventSub] No keepalive or notification received within ${this.keepaliveTimeoutSeconds}s.`,
+      );
 
       const socket = this.socket;
       this.socket = null;
 
-      if (socket) {
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
         socket.close();
       }
 
