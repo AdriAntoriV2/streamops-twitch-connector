@@ -76,6 +76,23 @@ await twitch.connectEventSub();
 
 - No dependency on NestJS or Express.
 - OAuth tokens are persisted through a caller-provided token store.
+- Tokens are validated when first used and then hourly, as required by
+  Twitch. Helix `401` responses trigger a single refresh-and-retry attempt,
+  following Twitch's recommendation to handle invalid tokens reactively.
+  See Twitch's [token validation](https://dev.twitch.tv/docs/authentication/validate-tokens/)
+  and [refresh](https://dev.twitch.tv/docs/authentication/refresh-tokens/)
+  guidance.
+- `twitch.tokens.refresh()` is available to request a refresh explicitly.
+  Listen to `twitch.tokens.onAuthError()` for background validation failures;
+  a `reauthentication_required` error means the user must authorize again.
+  The existing `startLogin()` / `completeLogin()` flow can be run in-process;
+  restarting the app is not required.
+- Refresh tokens may rotate, so token stores must persist every `save()` call.
+- Twitch documents silent refresh for Authorization Code Grant user tokens.
+  The built-in Device Code flow may therefore require interactive login again
+  when Twitch rejects its refresh token; the library reports this explicitly.
+- A `clientSecret` may be provided for confidential applications only. Never
+  ship it in a desktop or other public client.
 - Helix requests automatically include the Client ID and access token.
 - Chat messages are received through EventSub and sent through Helix.
 - EventSub subscriptions use the active WebSocket session ID.

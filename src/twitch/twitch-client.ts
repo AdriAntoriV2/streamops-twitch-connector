@@ -47,6 +47,7 @@ export class TwitchClient {
   }
 
   async connectEventSub(): Promise<void> {
+    await this.tokens.getAccessToken();
     await this.eventSub.connect();
   }
 

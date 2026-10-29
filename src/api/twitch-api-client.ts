@@ -1,4 +1,3 @@
-
 import type { TwitchConnectorConfig } from './types.js';
 import { TokenManager } from '../auth/token-manager.js';
 import { TwitchError } from '../errors/twitch-error.js';
@@ -22,24 +21,34 @@ export class TwitchApiClient {
     path: string,
     init: RequestInit = {},
   ): Promise<T> {
-    const accessToken = await this.tokenManager.getAccessToken();
+    let accessToken = await this.tokenManager.getAccessToken();
     const url = new URL(
       path.replace(/^\/+/, ''),
       `${HELIX_BASE_URL}/`,
     );
 
-    const headers = new Headers(init.headers);
-    headers.set('Client-Id', this.config.clientId);
-    headers.set('Authorization', `Bearer ${accessToken}`);
+    const send = (token: string): Promise<Response> => {
+      const headers = new Headers(init.headers);
+      headers.set('Client-Id', this.config.clientId);
+      headers.set('Authorization', `Bearer ${token}`);
 
-    if (init.body && !headers.has('Content-Type')) {
-      headers.set('Content-Type', 'application/json');
+      if (init.body && !headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+      }
+
+      return this.fetcher(url, {
+        ...init,
+        headers,
+      });
+    };
+
+    let response = await send(accessToken);
+
+    if (response.status === 401 && isReplayableBody(init.body)) {
+      accessToken =
+        await this.tokenManager.refreshAfterUnauthorized(accessToken);
+      response = await send(accessToken);
     }
-
-    const response = await this.fetcher(url, {
-      ...init,
-      headers,
-    });
 
     if (!response.ok) {
       const responseText = await response.text().catch(() => '');
@@ -74,4 +83,12 @@ export class TwitchApiClient {
       method: 'DELETE',
     });
   }
+}
+
+function isReplayableBody(body: BodyInit | null | undefined): boolean {
+  return (
+    body == null ||
+    typeof body !== 'object' ||
+    !('getReader' in body)
+  );
 }
