@@ -76,17 +76,21 @@ await twitch.connectEventSub();
 
 - No dependency on NestJS or Express.
 - OAuth tokens are persisted through a caller-provided token store.
-- Tokens are validated when first used and then hourly, as required by
-  Twitch. Helix `401` responses trigger a single refresh-and-retry attempt,
-  following Twitch's recommendation to handle invalid tokens reactively.
+- Tokens are validated when first used and then every 50 minutes, within
+  Twitch's hourly validation requirement. They are refreshed five minutes
+  before their recorded expiry. Helix `401` responses trigger a single
+  refresh-and-retry attempt, following Twitch's recommendation to handle
+  invalid tokens reactively.
   See Twitch's [token validation](https://dev.twitch.tv/docs/authentication/validate-tokens/)
   and [refresh](https://dev.twitch.tv/docs/authentication/refresh-tokens/)
   guidance.
 - `twitch.tokens.refresh()` is available to request a refresh explicitly.
   Listen to `twitch.tokens.onAuthError()` for background validation failures;
   a `reauthentication_required` error means the user must authorize again.
-  The existing `startLogin()` / `completeLogin()` flow can be run in-process;
-  restarting the app is not required.
+  The connector cannot complete that interactive step itself: the consuming
+  app should subscribe to `onAuthError()` and prompt the user to run the
+  existing `startLogin()` / `completeLogin()` flow. Restarting the app is not
+  required. Foreground API calls also reject with the auth error.
 - Refresh tokens may rotate, so token stores must persist every `save()` call.
 - Twitch documents silent refresh for Authorization Code Grant user tokens.
   The built-in Device Code flow may therefore require interactive login again

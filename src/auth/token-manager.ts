@@ -18,7 +18,8 @@ interface TokenResponse {
   token_type?: string;
 }
 
-const TOKEN_VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
+const TOKEN_VALIDATION_INTERVAL_MS = 50 * 60 * 1000;
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 export class TokenManager {
   private refreshPromise: Promise<TwitchTokens> | null = null;
@@ -136,16 +137,22 @@ export class TokenManager {
     this.stopValidationTimer();
   }
 
-  private validateIfDue(): Promise<void> {
+  private async validateIfDue(): Promise<void> {
+    const tokens = await this.getTokens();
+    const isNearExpiry =
+      tokens.expiresAt <= Date.now() + TOKEN_REFRESH_BUFFER_MS;
+
     if (
+      !isNearExpiry &&
       this.lastValidatedAt > 0 &&
       Date.now() - this.lastValidatedAt < TOKEN_VALIDATION_INTERVAL_MS
     ) {
-      return Promise.resolve();
+      return;
     }
 
     if (this.validationPromise) {
-      return this.validationPromise.then(() => undefined);
+      await this.validationPromise;
+      return;
     }
 
     this.validationPromise = this.validateCurrentTokens().finally(
@@ -154,14 +161,21 @@ export class TokenManager {
       },
     );
 
-    return this.validationPromise.then(() => undefined);
+    await this.validationPromise;
   }
 
   private async validateCurrentTokens(): Promise<TwitchValidatedToken> {
-    const tokens = await this.getTokens();
+    let tokens = await this.getTokens();
+    const refreshedBeforeValidation =
+      tokens.expiresAt <= Date.now() + TOKEN_REFRESH_BUFFER_MS;
+
+    if (refreshedBeforeValidation) {
+      tokens = await this.refreshTokens(tokens);
+    }
+
     let response = await this.validate(tokens.accessToken);
 
-    if (response.status === 401) {
+    if (response.status === 401 && !refreshedBeforeValidation) {
       const refreshed = await this.refreshTokens(tokens);
       response = await this.validate(refreshed.accessToken);
     }
@@ -188,18 +202,19 @@ export class TokenManager {
       );
     }
 
+    const expiresAt = Date.now() + validated.expires_in * 1000;
     const currentTokens = await this.tokenStore.load();
 
     if (currentTokens?.accessToken === tokens.accessToken) {
       await this.tokenStore.save({
         ...currentTokens,
-        expiresAt: Date.now() + validated.expires_in * 1000,
+        expiresAt,
       });
     }
 
     this.lastValidatedAt = Date.now();
     this.lastAuthError = null;
-    this.scheduleValidation();
+    this.scheduleValidation(expiresAt);
     return validated;
   }
 
@@ -211,12 +226,18 @@ export class TokenManager {
     });
   }
 
-  private scheduleValidation(): void {
+  private scheduleValidation(expiresAt: number): void {
     if (!this.validationMonitoring) {
       return;
     }
 
     this.stopValidationTimer();
+    const untilExpiry = expiresAt - Date.now() - TOKEN_REFRESH_BUFFER_MS;
+    const delay = Math.max(
+      0,
+      Math.min(TOKEN_VALIDATION_INTERVAL_MS, untilExpiry),
+    );
+
     this.validationTimer = setTimeout(() => {
       this.validationTimer = null;
       void this.validateCurrentTokens()
@@ -228,9 +249,13 @@ export class TokenManager {
           for (const handler of this.authErrorHandlers) {
             handler(authError);
           }
-        })
-        .finally(() => this.scheduleValidation());
-    }, TOKEN_VALIDATION_INTERVAL_MS);
+          this.scheduleValidation(
+            Date.now() +
+              TOKEN_VALIDATION_INTERVAL_MS +
+              TOKEN_REFRESH_BUFFER_MS,
+          );
+        });
+    }, delay);
 
     const timer = this.validationTimer as unknown as {
       unref?: () => void;

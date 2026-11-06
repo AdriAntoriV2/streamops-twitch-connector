@@ -70,30 +70,44 @@ describe('TokenManager', () => {
     manager.dispose();
   });
 
-  it('does not refresh just because the stored expiry time has passed', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          client_id: 'test-client-id',
-          login: 'streamer',
-          scopes: ['user:read:chat'],
-          user_id: 'user-123',
-          expires_in: 3600,
-        }),
-        { status: 200 },
-      ),
-    );
+  it('refreshes before the stored expiry time is reached', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'new-access-token',
+            refresh_token: 'new-refresh-token',
+            expires_in: 3600,
+            scope: ['user:read:chat'],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            client_id: 'test-client-id',
+            login: 'streamer',
+            scopes: ['user:read:chat'],
+            user_id: 'user-123',
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        ),
+      );
     const { manager } = createManager(
-      tokens({ expiresAt: Date.now() - 1000 }),
+      tokens({ expiresAt: Date.now() + 60_000 }),
       fetchMock,
     );
 
-    await expect(manager.getAccessToken()).resolves.toBe(
-      'old-access-token',
-    );
+    await expect(manager.getAccessToken()).resolves.toBe('new-access-token');
 
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://id.twitch.tv/oauth2/token',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
       'https://id.twitch.tv/oauth2/validate',
     );
     manager.dispose();
@@ -124,10 +138,7 @@ describe('TokenManager', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify(validation), { status: 200 }),
       );
-    const { manager, getStoredTokens } = createManager(
-      tokens({ expiresAt: Date.now() - 1000 }),
-      fetchMock,
-    );
+    const { manager, getStoredTokens } = createManager(tokens(), fetchMock);
 
     await expect(manager.getAccessToken()).resolves.toBe('new-access-token');
 
