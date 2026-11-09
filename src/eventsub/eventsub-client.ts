@@ -7,11 +7,15 @@ import type {
 import { TwitchError } from '../errors/twitch-error.js';
 
 const EVENTSUB_URL = 'wss://eventsub.wss.twitch.tv/ws';
+const INITIAL_RECONNECT_DELAY_MS = 2_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export type EventSubSessionHandler = (
   sessionId: string,
   isReconnectHandover: boolean,
 ) => Promise<void> | void;
+
+export type EventSubErrorHandler = (error: Error) => void;
 
 export class EventSubClient {
   private socket: WebSocket | null = null;
@@ -20,11 +24,13 @@ export class EventSubClient {
   private keepaliveTimeoutSeconds = 10;
   private keepaliveTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
   private intentionalClose = false;
   private state: EventSubConnectionState = 'disconnected';
 
   private readonly handlers = new Set<EventSubNotificationHandler>();
   private readonly sessionHandlers = new Set<EventSubSessionHandler>();
+  private readonly errorHandlers = new Set<EventSubErrorHandler>();
 
   constructor(
     private readonly onStateChange?: (
@@ -48,6 +54,11 @@ export class EventSubClient {
   onSession(handler: EventSubSessionHandler): () => void {
     this.sessionHandlers.add(handler);
     return () => this.sessionHandlers.delete(handler);
+  }
+
+  onError(handler: EventSubErrorHandler): () => void {
+    this.errorHandlers.add(handler);
+    return () => this.errorHandlers.delete(handler);
   }
 
   async connect(): Promise<void> {
@@ -104,6 +115,7 @@ export class EventSubClient {
 
     const previousSocket = this.socket;
     this.socket = socket;
+    let socketErrorReported = false;
 
     // Logging suppressed; retain original connection behavior.
     void previousSocket;
@@ -123,19 +135,25 @@ export class EventSubClient {
 
       const raw = String(message.data);
 
-      // Parse and handle the message as before, without routine log output.
       void this.handleMessage(raw, isReconnectHandover).catch(
-        (_error: unknown) => {
-          // EventSub processing errors suppressed.
+        (error: unknown) => {
+          this.reportError(error);
         },
       );
     });
 
     socket.addEventListener('error', () => {
-      // WebSocket error logging suppressed.
+      if (this.socket !== socket) {
+        return;
+      }
+
+      socketErrorReported = true;
+      this.reportError(
+        new TwitchError('Twitch EventSub WebSocket encountered a connection error.'),
+      );
     });
 
-    socket.addEventListener('close', (_event: CloseEvent) => {
+    socket.addEventListener('close', (event: CloseEvent) => {
       if (this.socket !== socket) {
         return;
       }
@@ -144,6 +162,15 @@ export class EventSubClient {
       this.clearKeepaliveTimer();
 
       if (!this.intentionalClose) {
+        if (!socketErrorReported) {
+          this.reportError(
+            new TwitchError(
+              `Twitch EventSub WebSocket closed unexpectedly (code: ${event.code}${
+                event.reason ? `, reason: ${event.reason}` : ''
+              }).`,
+            ),
+          );
+        }
         this.setState('reconnecting');
         this.scheduleReconnect();
       } else {
@@ -180,9 +207,16 @@ export class EventSubClient {
         this.resetKeepaliveTimer();
 
         for (const handler of this.sessionHandlers) {
-          await handler(session.id, isReconnectHandover);
+          try {
+            await handler(session.id, isReconnectHandover);
+          } catch (error) {
+            this.reportError(error);
+            this.reconnectAfterSessionError();
+            return;
+          }
         }
 
+        this.reconnectAttempts = 0;
         break;
       }
 
@@ -194,6 +228,11 @@ export class EventSubClient {
         const reconnectUrl = envelope.payload.session?.reconnect_url;
 
         if (!reconnectUrl) {
+          this.reportError(
+            new TwitchError(
+              'Twitch EventSub reconnect message did not include a reconnect URL.',
+            ),
+          );
           return;
         }
 
@@ -227,12 +266,25 @@ export class EventSubClient {
       }
 
       case 'session_reconnect_failed':
+        this.reportError(
+          new TwitchError('Twitch EventSub session handover failed.'),
+        );
         this.reconnectUrl = null;
         this.scheduleReconnect();
         break;
 
       case 'revocation':
-        // Revocation logging suppressed.
+        this.reportError(
+          new TwitchError(
+            `Twitch revoked the EventSub subscription${
+              envelope.payload.subscription?.type
+                ? ` "${envelope.payload.subscription.type}"`
+                : ''
+            } (status: ${
+              envelope.payload.subscription?.status ?? 'unknown'
+            }).`,
+          ),
+        );
         break;
 
       default:
@@ -247,6 +299,11 @@ export class EventSubClient {
     this.keepaliveTimer = setTimeout(() => {
       const socket = this.socket;
       this.socket = null;
+      this.reportError(
+        new TwitchError(
+          `Twitch EventSub did not receive a keepalive or notification within ${this.keepaliveTimeoutSeconds} seconds.`,
+        ),
+      );
 
       if (socket && socket.readyState !== WebSocket.CLOSED) {
         socket.close();
@@ -265,14 +322,54 @@ export class EventSubClient {
 
     this.setState('reconnecting');
 
+    const delay = Math.min(
+      INITIAL_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
+      MAX_RECONNECT_DELAY_MS,
+    );
+    this.reconnectAttempts += 1;
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.sessionId = null;
 
       if (!this.intentionalClose) {
-        this.openSocket(this.reconnectUrl ?? EVENTSUB_URL);
+        try {
+          this.openSocket(this.reconnectUrl ?? EVENTSUB_URL);
+        } catch (error) {
+          this.reportError(error);
+        }
       }
-    }, 2_000);
+    }, delay);
+  }
+
+  private reconnectAfterSessionError(): void {
+    const socket = this.socket;
+    if (!socket || this.intentionalClose) {
+      return;
+    }
+
+    this.socket = null;
+    this.clearKeepaliveTimer();
+    socket.close();
+    this.scheduleReconnect();
+  }
+
+  private reportError(error: unknown): void {
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+
+    if (this.errorHandlers.size === 0) {
+      console.error('[EventSub] Error:', normalizedError);
+      return;
+    }
+
+    for (const handler of this.errorHandlers) {
+      try {
+        handler(normalizedError);
+      } catch (handlerError) {
+        console.error('[EventSub] Error handler failed:', handlerError);
+      }
+    }
   }
 
   private setState(state: EventSubConnectionState): void {

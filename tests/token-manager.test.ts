@@ -193,4 +193,56 @@ describe('TokenManager', () => {
       statusCode: 401,
     });
   });
+
+  it('retries background validation failures after a short delay', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-09T00:00:00Z'));
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            client_id: 'test-client-id',
+            login: 'streamer',
+            scopes: ['user:read:chat'],
+            user_id: 'user-123',
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response('Unavailable', { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            client_id: 'test-client-id',
+            login: 'streamer',
+            scopes: ['user:read:chat'],
+            user_id: 'user-123',
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        ),
+      );
+    const { manager } = createManager(tokens(), fetchMock);
+    const onAuthError = vi.fn();
+    manager.onAuthError(onAuthError);
+
+    try {
+      await manager.getAccessToken();
+      await vi.advanceTimersByTimeAsync(50 * 60 * 1000);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(onAuthError).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(60 * 1000);
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(manager.authError).toBeNull();
+    } finally {
+      manager.dispose();
+      vi.useRealTimers();
+    }
+  });
 });

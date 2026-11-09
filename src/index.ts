@@ -21,7 +21,10 @@ export type {
   TwitchChatMessageHandler,
 } from './chat/types.js';
 
-export { EventSubClient } from './eventsub/eventsub-client.js';
+export {
+  EventSubClient,
+  type EventSubErrorHandler,
+} from './eventsub/eventsub-client.js';
 export { EventSubSubscriptions } from './eventsub/eventsub-subscription.js';
 export type {
   EventSubConnectionState,

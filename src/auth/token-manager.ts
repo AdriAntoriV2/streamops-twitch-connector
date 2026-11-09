@@ -20,6 +20,8 @@ interface TokenResponse {
 
 const TOKEN_VALIDATION_INTERVAL_MS = 50 * 60 * 1000;
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+const INITIAL_VALIDATION_RETRY_MS = 60 * 1000;
+const MAX_VALIDATION_RETRY_MS = 5 * 60 * 1000;
 
 export class TokenManager {
   private refreshPromise: Promise<TwitchTokens> | null = null;
@@ -27,6 +29,7 @@ export class TokenManager {
   private validationTimer: ReturnType<typeof setTimeout> | null = null;
   private lastValidatedAt = 0;
   private lastAuthError: Error | null = null;
+  private validationFailureCount = 0;
   private validationMonitoring = true;
   private readonly authErrorHandlers = new Set<(error: Error) => void>();
 
@@ -110,7 +113,10 @@ export class TokenManager {
     };
 
     await this.tokenStore.save(tokens);
+    this.stopValidationTimer();
     this.lastValidatedAt = 0;
+    this.lastAuthError = null;
+    this.validationFailureCount = 0;
     this.validationMonitoring = true;
     return tokens;
   }
@@ -120,6 +126,7 @@ export class TokenManager {
     this.stopValidationTimer();
     this.lastValidatedAt = 0;
     this.lastAuthError = null;
+    this.validationFailureCount = 0;
     await this.tokenStore.clear();
   }
 
@@ -214,6 +221,7 @@ export class TokenManager {
 
     this.lastValidatedAt = Date.now();
     this.lastAuthError = null;
+    this.validationFailureCount = 0;
     this.scheduleValidation(expiresAt);
     return validated;
   }
@@ -246,14 +254,8 @@ export class TokenManager {
             error instanceof Error ? error : new Error(String(error));
           this.lastAuthError = authError;
 
-          for (const handler of this.authErrorHandlers) {
-            handler(authError);
-          }
-          this.scheduleValidation(
-            Date.now() +
-              TOKEN_VALIDATION_INTERVAL_MS +
-              TOKEN_REFRESH_BUFFER_MS,
-          );
+          this.notifyAuthError(authError);
+          this.scheduleValidationRetry();
         });
     }, delay);
 
@@ -261,6 +263,30 @@ export class TokenManager {
       unref?: () => void;
     };
     timer.unref?.();
+  }
+
+  private notifyAuthError(error: Error): void {
+    if (this.authErrorHandlers.size === 0) {
+      console.error('[Twitch] Background token validation failed:', error);
+      return;
+    }
+
+    for (const handler of this.authErrorHandlers) {
+      try {
+        handler(error);
+      } catch (handlerError) {
+        console.error('[Twitch] Auth error handler failed:', handlerError);
+      }
+    }
+  }
+
+  private scheduleValidationRetry(): void {
+    const delay = Math.min(
+      INITIAL_VALIDATION_RETRY_MS * 2 ** this.validationFailureCount,
+      MAX_VALIDATION_RETRY_MS,
+    );
+    this.validationFailureCount += 1;
+    this.scheduleValidation(Date.now() + delay + TOKEN_REFRESH_BUFFER_MS);
   }
 
   private stopValidationTimer(): void {

@@ -87,6 +87,8 @@ await twitch.connectEventSub();
 - `twitch.tokens.refresh()` is available to request a refresh explicitly.
   Listen to `twitch.tokens.onAuthError()` for background validation failures;
   a `reauthentication_required` error means the user must authorize again.
+  Background validation retries with exponential backoff from one to five
+  minutes, and errors are logged when no handler is registered.
   The connector cannot complete that interactive step itself: the consuming
   app should subscribe to `onAuthError()` and prompt the user to run the
   existing `startLogin()` / `completeLogin()` flow. Restarting the app is not
@@ -100,6 +102,11 @@ await twitch.connectEventSub();
 - Helix requests automatically include the Client ID and access token.
 - Chat messages are received through EventSub and sent through Helix.
 - EventSub subscriptions use the active WebSocket session ID.
+- Register `twitch.eventSub.onError()` to receive unexpected disconnects,
+  subscription revocations, and processing failures. If a session handler
+  fails (for example, when subscribing after a reconnect), the connector
+  reports the error and reconnects so session handlers can run again.
+  Reconnect attempts back off from two to thirty seconds.
 
 ## Notes
 
