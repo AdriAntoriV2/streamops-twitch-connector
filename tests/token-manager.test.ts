@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TokenManager } from '../src/auth/token-manager.js';
 import type { TwitchTokens } from '../src/auth/token-store.js';
-import type { DeviceCodeFlow } from '../src/auth/device-code-flow.js';
+import { AuthorizationCodeFlow } from '../src/auth/authorization-code-flow.js';
+import { DeviceCodeFlow } from '../src/auth/device-code-flow.js';
 
 function createManager(
   initialTokens: TwitchTokens,
   fetchMock: typeof fetch,
-  clientSecret?: string,
+  clientSecret = 'test-client-secret',
 ) {
   let storedTokens: TwitchTokens | null = initialTokens;
   const tokenStore = {
@@ -43,6 +44,113 @@ function tokens(overrides: Partial<TwitchTokens> = {}): TwitchTokens {
 }
 
 describe('TokenManager', () => {
+  it('keeps the existing Device Code login methods working', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    let storedTokens: TwitchTokens | null = tokens();
+    const tokenStore = {
+      load: vi.fn(async () => storedTokens),
+      save: vi.fn(async (value: TwitchTokens) => {
+        storedTokens = value;
+      }),
+      clear: vi.fn(async () => {
+        storedTokens = null;
+      }),
+    };
+    const login = {
+      userCode: 'ABCD-EFGH',
+      verificationUri: 'https://www.twitch.tv/activate',
+      expiresIn: 600,
+      interval: 5,
+    };
+    const deviceCodeFlow = {
+      startLogin: vi.fn().mockResolvedValue(login),
+      waitForAuthorization: vi.fn().mockResolvedValue({
+        access_token: 'device-access-token',
+        refresh_token: 'device-refresh-token',
+        expires_in: 3600,
+        scope: ['user:read:chat'],
+        token_type: 'bearer',
+      }),
+    };
+    const compatibleManager = new TokenManager(
+      {
+        clientId: 'test-client-id',
+        scopes: [],
+        fetch: fetchMock,
+      },
+      tokenStore,
+      deviceCodeFlow as unknown as DeviceCodeFlow,
+    );
+    const abortController = new AbortController();
+
+    await expect(compatibleManager.startLogin()).resolves.toEqual(login);
+    await expect(
+      compatibleManager.completeLogin(abortController.signal),
+    ).resolves.toMatchObject({
+      accessToken: 'device-access-token',
+      refreshToken: 'device-refresh-token',
+    });
+
+    expect(deviceCodeFlow.waitForAuthorization).toHaveBeenCalledWith(
+      abortController.signal,
+    );
+    expect(storedTokens?.refreshToken).toBe('device-refresh-token');
+    expect(tokenStore.save).toHaveBeenCalledOnce();
+    compatibleManager.dispose();
+  });
+
+  it('stores tokens received from the authorization code callback', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: 'authorized-access-token',
+          refresh_token: 'authorized-refresh-token',
+          expires_in: 3600,
+          scope: ['user:read:chat'],
+        }),
+        { status: 200 },
+      ),
+    );
+    let storedTokens: TwitchTokens | null = null;
+    const tokenStore = {
+      load: vi.fn(async () => storedTokens),
+      save: vi.fn(async (value: TwitchTokens) => {
+        storedTokens = value;
+      }),
+      clear: vi.fn(async () => {
+        storedTokens = null;
+      }),
+    };
+    const config = {
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      scopes: ['user:read:chat'],
+      fetch: fetchMock,
+    };
+    const manager = new TokenManager(
+      config,
+      tokenStore,
+      {} as DeviceCodeFlow,
+      new AuthorizationCodeFlow(config),
+    );
+
+    await expect(
+      manager.completeAuthorization({
+        code: 'authorization-code',
+        redirectUri: 'https://example.test/twitch/callback',
+        state: 'callback-state',
+        expectedState: 'callback-state',
+      }),
+    ).resolves.toMatchObject({
+      accessToken: 'authorized-access-token',
+      refreshToken: 'authorized-refresh-token',
+      scopes: ['user:read:chat'],
+    });
+    expect(storedTokens?.refreshToken).toBe('authorized-refresh-token');
+    expect(tokenStore.save).toHaveBeenCalledOnce();
+    manager.dispose();
+  });
+
   it('validates on first use and does not validate again within the hour', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -147,7 +255,7 @@ describe('TokenManager', () => {
     manager.dispose();
   });
 
-  it('refreshes with a rotated refresh token and optional client secret', async () => {
+  it('refreshes with a rotated refresh token and client secret', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({

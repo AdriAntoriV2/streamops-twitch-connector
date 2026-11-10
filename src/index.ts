@@ -9,6 +9,11 @@ export type {
 
 export { TokenManager } from './auth/token-manager.js';
 export type {
+  TwitchAuthorizationCallback,
+  TwitchAuthorizationRequest,
+  TwitchAuthorizationRequestResult,
+} from './auth/authorization-code-flow.js';
+export type {
   TwitchTokenStore,
   TwitchTokens,
 } from './auth/token-store.js';

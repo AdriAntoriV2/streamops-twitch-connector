@@ -3,7 +3,7 @@ import type { TwitchTokenStore } from '../auth/token-store.js';
 
 export interface TwitchConnectorConfig {
   clientId: string;
-  /** Only provide this for a confidential Twitch application. Never embed it in a desktop client. */
+  /** Required for Authorization Code Grant. Keep it on a trusted server; never expose it to clients. */
   clientSecret?: string;
   scopes: string[];
   tokenStore: TwitchTokenStore;

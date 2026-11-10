@@ -5,6 +5,12 @@ import type {
 } from '../api/types.js';
 import { TwitchError } from '../errors/twitch-error.js';
 import type { DeviceCodeFlow } from './device-code-flow.js';
+import { AuthorizationCodeFlow } from './authorization-code-flow.js';
+import type {
+  TwitchAuthorizationCallback,
+  TwitchAuthorizationRequest,
+  TwitchAuthorizationRequestResult,
+} from './authorization-code-flow.js';
 import type { TwitchTokenStore, TwitchTokens } from './token-store.js';
 
 const TWITCH_VALIDATE_URL = 'https://id.twitch.tv/oauth2/validate';
@@ -24,6 +30,7 @@ const INITIAL_VALIDATION_RETRY_MS = 60 * 1000;
 const MAX_VALIDATION_RETRY_MS = 5 * 60 * 1000;
 
 export class TokenManager {
+  private readonly authorizationCodeFlow: AuthorizationCodeFlow;
   private refreshPromise: Promise<TwitchTokens> | null = null;
   private validationPromise: Promise<TwitchValidatedToken> | null = null;
   private validationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -40,7 +47,11 @@ export class TokenManager {
     >,
     private readonly tokenStore: TwitchTokenStore,
     private readonly deviceCodeFlow: DeviceCodeFlow,
-  ) {}
+    authorizationCodeFlow?: AuthorizationCodeFlow,
+  ) {
+    this.authorizationCodeFlow =
+      authorizationCodeFlow ?? new AuthorizationCodeFlow(config);
+  }
 
   private get fetcher(): typeof fetch {
     return this.config.fetch ?? fetch;
@@ -98,6 +109,16 @@ export class TokenManager {
     return refreshed.accessToken;
   }
 
+  createAuthorizationUrl(request: TwitchAuthorizationRequest): string {
+    return this.authorizationCodeFlow.createAuthorizationUrl(request);
+  }
+
+  createAuthorizationRequest(
+    redirectUri: string,
+  ): TwitchAuthorizationRequestResult {
+    return this.authorizationCodeFlow.createAuthorizationRequest(redirectUri);
+  }
+
   async startLogin() {
     return this.deviceCodeFlow.startLogin();
   }
@@ -105,13 +126,28 @@ export class TokenManager {
   async completeLogin(signal?: AbortSignal): Promise<TwitchTokens> {
     const response = await this.deviceCodeFlow.waitForAuthorization(signal);
 
-    const tokens: TwitchTokens = {
+    return this.saveLoginTokens({
       accessToken: response.access_token,
       refreshToken: response.refresh_token,
       expiresAt: Date.now() + response.expires_in * 1000,
       scopes: response.scope,
-    };
+    });
+  }
 
+  async completeAuthorization(
+    callback: TwitchAuthorizationCallback,
+  ): Promise<TwitchTokens> {
+    const response = await this.authorizationCodeFlow.exchangeCode(callback);
+
+    return this.saveLoginTokens({
+      accessToken: response.access_token,
+      refreshToken: response.refresh_token,
+      expiresAt: Date.now() + response.expires_in * 1000,
+      scopes: response.scope,
+    });
+  }
+
+  private async saveLoginTokens(tokens: TwitchTokens): Promise<TwitchTokens> {
     await this.tokenStore.save(tokens);
     this.stopValidationTimer();
     this.lastValidatedAt = 0;

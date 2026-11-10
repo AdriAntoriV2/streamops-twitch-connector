@@ -1,6 +1,7 @@
 
 import type { TwitchConnectorConfig } from '../api/types.js';
 import { TwitchApiClient } from '../api/twitch-api-client.js';
+import { AuthorizationCodeFlow } from '../auth/authorization-code-flow.js';
 import { DeviceCodeFlow } from '../auth/device-code-flow.js';
 import { TokenManager } from '../auth/token-manager.js';
 import type { TwitchTokenStore } from '../auth/token-store.js';
@@ -24,10 +25,18 @@ export class TwitchClient {
       fetch: config.fetch,
     });
 
+    const authorizationCodeFlow = new AuthorizationCodeFlow({
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+      scopes: config.scopes,
+      fetch: config.fetch,
+    });
+
     this.tokens = new TokenManager(
       config,
       tokenStore,
       deviceCodeFlow,
+      authorizationCodeFlow,
     );
 
     this.api = new TwitchApiClient(config, this.tokens);
