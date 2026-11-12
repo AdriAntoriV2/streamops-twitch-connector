@@ -154,6 +154,7 @@ export class TokenManager {
     this.lastAuthError = null;
     this.validationFailureCount = 0;
     this.validationMonitoring = true;
+    this.scheduleValidation(tokens.expiresAt);
     return tokens;
   }
 

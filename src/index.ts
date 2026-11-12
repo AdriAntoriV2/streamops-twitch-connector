@@ -8,6 +8,7 @@ export type {
 } from './api/types.js';
 
 export { TokenManager } from './auth/token-manager.js';
+export { KeyringTokenStore } from './auth/keyring-token-store.js';
 export type {
   TwitchAuthorizationCallback,
   TwitchAuthorizationRequest,

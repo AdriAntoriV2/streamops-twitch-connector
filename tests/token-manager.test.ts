@@ -151,6 +151,102 @@ describe('TokenManager', () => {
     manager.dispose();
   });
 
+  it('proactively refreshes Device Code tokens and saves the rotated token', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-09T00:00:00Z'));
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            client_id: 'test-client-id',
+            login: 'streamer',
+            scopes: ['user:read:chat'],
+            user_id: 'user-123',
+            expires_in: 600,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'rotated-access-token',
+            refresh_token: 'rotated-refresh-token',
+            expires_in: 3600,
+            scope: ['user:read:chat'],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            client_id: 'test-client-id',
+            login: 'streamer',
+            scopes: ['user:read:chat'],
+            user_id: 'user-123',
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        ),
+      );
+    let storedTokens: TwitchTokens | null = null;
+    const tokenStore = {
+      load: vi.fn(async () => storedTokens),
+      save: vi.fn(async (value: TwitchTokens) => {
+        storedTokens = value;
+      }),
+      clear: vi.fn(async () => {}),
+    };
+    const deviceCodeFlow = {
+      waitForAuthorization: vi.fn().mockResolvedValue({
+        access_token: 'device-access-token',
+        refresh_token: 'device-refresh-token',
+        expires_in: 3600,
+        scope: ['user:read:chat'],
+        token_type: 'bearer',
+      }),
+    };
+    const manager = new TokenManager(
+      {
+        clientId: 'test-client-id',
+        scopes: ['user:read:chat'],
+        fetch: fetchMock,
+      },
+      tokenStore,
+      deviceCodeFlow as unknown as DeviceCodeFlow,
+    );
+
+    try {
+      await manager.completeLogin();
+      await vi.advanceTimersByTimeAsync(56 * 60 * 1000);
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(fetchMock.mock.calls[1][0])).toBe(
+        'https://id.twitch.tv/oauth2/token',
+      );
+      const [, refreshRequest] = fetchMock.mock.calls[1];
+      const refreshBody = new URLSearchParams(
+        String(refreshRequest?.body),
+      );
+      expect(refreshBody.get('refresh_token')).toBe('device-refresh-token');
+      expect(refreshBody.has('client_secret')).toBe(false);
+      expect(tokenStore.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          accessToken: 'rotated-access-token',
+          refreshToken: 'rotated-refresh-token',
+          scopes: ['user:read:chat'],
+        }),
+      );
+      expect(storedTokens?.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      manager.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('validates on first use and does not validate again within the hour', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

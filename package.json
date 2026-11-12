@@ -1,6 +1,6 @@
 {
   "name": "streamops-twitch-connector",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Framework-independent Twitch OAuth, EventSub, and chat connector",
   "license": "MIT",
   "type": "module",
@@ -24,8 +24,11 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.19.2",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^2.1.2"
   }
 }

@@ -1,175 +1,102 @@
 # StreamOps Twitch Connector
 
-A small, framework-independent TypeScript library for Twitch OAuth, Helix,
-chat, and EventSub. The product owns its Twitch application, callback route,
-and secure token storage; the connector handles Twitch requests and token
-refreshing. It supports both Device Code Grant (DCF) and Authorization Code
-Grant (ACF); either flow uses the same API, chat, EventSub, and token store.
+A framework-independent TypeScript library for Twitch OAuth, Helix, chat, and
+EventSub. For a public local app, use Device Code Grant: your app supplies its
+Client ID, and each user connects their own Twitch account.
 
 ## Requirements
 
 - Node.js 22 or newer
-- A Twitch application registered for each product
-- A backend that can keep the client secret private if using Authorization
-  Code Grant
-- A token store supplied by the product
+- A Twitch application
+- A token store supplied by your app (the examples use the operating system
+  credential store)
 
 Never put a Twitch client secret or refresh token in a browser or desktop
 client. Have those clients call your backend instead.
 
-## Quick start
+## How to use
 
-Install the package and create one `TwitchClient` in your backend. Use a
-durable `TwitchTokenStore` implementation from your app (for example, your
-current JSON-backed store):
+1. Register one Twitch application for your product. Your users do not need to
+   register their own applications.
+2. Set your app's Client ID, requested scopes, and a unique keyring service
+   name in [example/config.ts](./example/config.ts). The Client ID is public
+   and can be included in your app.
+3. Use Device Code Grant for a public local app. Do not include a Client Secret
+   in its release.
+4. Install `streamops-twitch-connector` and run the Device Code example with
+   your TypeScript runner.
 
-```typescript
-import { TwitchClient, type TwitchTokenStore } from 'streamops-twitch-connector';
-import { twitchTokenStore } from './twitch-token-store.js';
+The Authorization Code example is for a trusted backend only. Provide
+`TWITCH_CLIENT_SECRET` through the backend environment (for example,
+`node --env-file=.env ...`) and never bundle it in a local app.
 
-const tokenStore: TwitchTokenStore = twitchTokenStore;
+Installing the library does not ask for credentials. Your app passes its
+Client ID when it creates `TwitchClient`; `clientSecret` is optional and is
+only needed for Authorization Code Grant on a trusted backend.
 
-export const twitch = new TwitchClient({
-  clientId: process.env.TWITCH_CLIENT_ID!,
-  clientSecret: process.env.TWITCH_CLIENT_SECRET!,
-  scopes: ['user:read:chat', 'user:write:chat'],
-  tokenStore,
-});
-```
+### Device Code Grant
 
-`TwitchTokenStore` has three methods: `load()` returns saved tokens or `null`,
-`save(tokens)` persists the complete token set, and `clear()` removes it.
-Persist every `save()` call because Twitch can rotate the refresh token.
-Protect the file or database with appropriate server-side access controls.
+Use this flow for a public local app because it does not need a Client Secret.
+The first time it runs, there are no saved tokens, so it prints a URL and code
+and waits for the user to approve access. The example then stores the tokens in
+the operating system credential store. On later runs, it loads the saved
+tokens automatically.
 
-## Choose an authorization flow
+[Device Code Grant example](./example/DeviceFlow/device-code-grant.ts)
 
-Use Device Code Grant for clients that cannot safely keep a client secret. It
-preserves the original `0.3.0` login API:
+### Authorization Code Grant
 
-```typescript
-const login = await twitch.tokens.startLogin();
-console.log('Open:', login.verificationUri);
-console.log('Enter code:', login.userCode);
+Use this flow in a trusted backend that can keep the Client Secret private. The
+example starts a small local server. Register
+`http://localhost:3000/callback` as the Twitch application's redirect URL, then
+open `http://localhost:3000/login`.
 
-const tokens = await twitch.tokens.completeLogin();
-```
+[Authorization Code Grant example](./example/AuthorizationFlow/authorization-code-grant.ts)
 
-DCF refresh behavior depends on Twitch's token policy. If the refresh token
-is rejected, the user will need to authorize again.
+The local example keeps OAuth state in memory and is for one user. In a
+multi-user app, keep each login's state in that user's server-side session.
+Use the exact same redirect URL when creating the authorization request and
+exchanging the returned code.
 
-Use Authorization Code Grant when your product has a trusted backend. The
-backend must keep its app's client secret private. It creates an authorization
-URL and associates the returned `state` with the user's server-side session.
-Redirect the user's browser to the URL:
+## After login
 
-```typescript
-const callbackUri = 'https://your-product.example/api/twitch/callback';
-const request = twitch.tokens.createAuthorizationRequest(callbackUri);
+Both examples use `TwitchTokenStore`, which has three methods:
 
-await session.set('twitchOAuthState', request.state);
-return redirect(request.authorizationUrl);
-```
+- `load()` returns saved tokens or `null`.
+- `save(tokens)` persists the complete token set.
+- `clear()` removes saved tokens.
 
-The callback route receives `code` and `state` from Twitch. Retrieve the
-expected state from that same user's session and pass both values to the
-connector. The connector checks the state before exchanging the code and
-saving the tokens:
+Persist every `save()` call because Twitch can rotate refresh tokens. The
+examples use `KeyringTokenStore` to save credentials in the operating system
+credential store. On Linux, a persistent Secret Service provider (such as
+GNOME Keyring or KWallet) must be available; the example reports an error if
+it is not. The `TwitchTokenStore` interface also lets your app provide another
+secure storage implementation.
 
-```typescript
-const expectedState = await session.get('twitchOAuthState');
-const tokens = await twitch.tokens.completeAuthorization({
-  code: callbackQuery.code,
-  state: callbackQuery.state,
-  expectedState,
-  redirectUri: callbackUri,
-});
+The connector schedules refreshes shortly before the access token expires,
+including immediately after a successful login. Device Code Grant refresh
+tokens are single-use: Twitch returns a replacement refresh token each time,
+and the token store must persist it. Twitch documents that an inactive Device
+Code refresh token expires after 30 days; after that, the user must authorize
+again.
 
-await session.delete('twitchOAuthState');
-```
+The connector also retries a Helix request once after a `401`. If Twitch
+rejects a refresh token, the user must connect again. Call
+`twitch.tokens.dispose()` when your `TwitchClient` is no longer needed.
 
-Use the exact same registered `redirectUri` when creating the URL and
-exchanging the code. Handle Twitch's `error` callback parameters in the
-product's callback route and show an appropriate message to the user.
-Keep the client secret on the backend; Authorization Code Grant requires it
-for this confidential-server setup.
-
-After authorization, normal API calls use the saved tokens:
-
-```typescript
-const user = await twitch.api.get('/users');
-```
-
-The connector validates tokens, refreshes them after expiry or an API `401`,
-and persists the new access and refresh tokens. If Twitch rejects a refresh
-token, listen for `reauthentication_required` and send the user through the
-connect flow again:
-
-```typescript
-twitch.tokens.onAuthError((error) => {
-  if ('errorCode' in error && error.errorCode === 'reauthentication_required') {
-    // Notify the product that this user must connect Twitch again.
-  }
-});
-```
-
-## Receive and send chat messages
-
-After connecting EventSub, subscribe to chat messages. The callback receives
-a plain typed message object; log it, map it to your own model, or publish it
-to another part of your app:
-
-```typescript
-twitch.chat.onMessage((message) => {
-  console.log(`${message.chatterName}: ${message.text}`);
-
-  const productMessage = {
-    user: message.chatterName,
-    text: message.text,
-    receivedAt: message.sentAt,
-  };
-  // Pass productMessage to your own event bus or application logic.
-});
-
-twitch.eventSub.onSession(async (sessionId) => {
-  await twitch.subscriptions.subscribeToChatMessages(
-    broadcasterUserId,
-    userId,
-    sessionId,
-  );
-});
-
-await twitch.connectEventSub();
-```
-
-Send a chat message with:
-
-```typescript
-await twitch.chat.sendMessage({
-  broadcasterId,
-  message: 'Hello from my app!',
-});
-```
+After connecting, use `twitch.api` for Helix requests, `twitch.chat` to send or
+receive chat messages, and `twitch.eventSub` / `twitch.subscriptions` for
+EventSub. See the TypeScript types exported by the package for each API.
 
 ## Design and limitations
 
-- No NestJS, Express, or other framework dependency. Products implement their
-  own routes, session/state storage, and token storage.
-- Each product registers its own Twitch application and configures its own
-  Client ID, scopes, and token store. ACF additionally requires a private
-  client secret and registered redirect URI.
-- The connector currently supports one authenticated Twitch account per
-  `TwitchClient` / token store. Products supporting multiple Twitch users
-  should create isolated clients and token stores per account.
-- Tokens are checked with Twitch periodically and refreshed as needed. Helix
-  `401` responses trigger one refresh-and-retry attempt.
-- Call `twitch.tokens.dispose()` when the client is no longer needed to stop
-  background token checks.
-- Chat messages are received through EventSub and sent through Helix.
-
-Treat access and refresh tokens as sensitive. Do not commit them to source
-control.
-
-The original Device Code `startLogin()` / `completeLogin()` API remains
-available for existing products. ACF is opt-in through
-`createAuthorizationRequest()` / `completeAuthorization()`.
+- No NestJS, Express, or other framework dependency. Your app owns its routes
+  and session/state storage.
+- Register a separate Twitch application and configure its own Client ID,
+  scopes, token store, and (for Authorization Code Grant) private Client
+  Secret.
+- One `TwitchClient` and token store support one authenticated Twitch account.
+  For multiple accounts, create an isolated client and token store per account.
+- The original Device Code `startLogin()` / `completeLogin()` API remains
+  available. Authorization Code Grant is opt-in through
+  `createAuthorizationRequest()` / `completeAuthorization()`.
