@@ -296,12 +296,15 @@ export class EventSubClient {
   private resetKeepaliveTimer(): void {
     this.clearKeepaliveTimer();
 
+    const bufferSeconds = 5;
+    const timeoutMs = (this.keepaliveTimeoutSeconds + bufferSeconds) * 1000;
+
     this.keepaliveTimer = setTimeout(() => {
       const socket = this.socket;
       this.socket = null;
       this.reportError(
         new TwitchError(
-          `Twitch EventSub did not receive a keepalive or notification within ${this.keepaliveTimeoutSeconds} seconds.`,
+          `Twitch EventSub did not receive a keepalive or notification within ${this.keepaliveTimeoutSeconds + bufferSeconds} seconds (configured timeout: ${this.keepaliveTimeoutSeconds}s + ${bufferSeconds}s buffer).`,
         ),
       );
 
@@ -312,7 +315,7 @@ export class EventSubClient {
       if (!this.intentionalClose) {
         this.scheduleReconnect();
       }
-    }, this.keepaliveTimeoutSeconds * 1000);
+    }, timeoutMs);
   }
 
   private scheduleReconnect(): void {
