@@ -1,5 +1,7 @@
 # StreamOps Twitch Connector
 
+Git URL : https://github.com/AdriAntoriV2/streamops-twitch-connector
+
 A framework-independent TypeScript library for Twitch OAuth, Helix, chat, and
 EventSub. For a public local app, use Device Code Grant: your app supplies its
 Client ID, and each user connects their own Twitch account.
@@ -19,7 +21,7 @@ client. Have those clients call your backend instead.
 1. Register one Twitch application for your product. Your users do not need to
    register their own applications.
 2. Set your app's Client ID, requested scopes, and a unique keyring service
-   name in [example/config.ts](./example/config.ts). The Client ID is public
+   name in [example/config.ts](https://github.com/AdriAntoriV2/streamops-twitch-connector/blob/main/example/config.ts). The Client ID is public
    and can be included in your app.
 3. Use Device Code Grant for a public local app. Do not include a Client Secret
    in its release.
@@ -42,7 +44,7 @@ and waits for the user to approve access. The example then stores the tokens in
 the operating system credential store. On later runs, it loads the saved
 tokens automatically.
 
-[Device Code Grant example](./example/DeviceFlow/device-code-grant.ts)
+[Device Code Grant example](https://github.com/AdriAntoriV2/streamops-twitch-connector/blob/main/example/DeviceFlow/device-code-grant.ts)
 
 ### Authorization Code Grant
 
@@ -51,7 +53,7 @@ example starts a small local server. Register
 `http://localhost:3000/callback` as the Twitch application's redirect URL, then
 open `http://localhost:3000/login`.
 
-[Authorization Code Grant example](./example/AuthorizationFlow/authorization-code-grant.ts)
+[Authorization Code Grant example](https://github.com/AdriAntoriV2/streamops-twitch-connector/blob/main/example/AuthorizationFlow/authorization-code-grant.ts)
 
 The local example keeps OAuth state in memory and is for one user. In a
 multi-user app, keep each login's state in that user's server-side session.
